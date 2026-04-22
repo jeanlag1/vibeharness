@@ -44,9 +44,10 @@ def _build_agent(
         permissions=perms,
         max_iters=max_iters,
         hooks=AgentHooks(
-            on_assistant_text=ui.assistant_text,
+            on_text_delta=ui.text_delta,
             on_tool_start=ui.tool_start,
             on_tool_end=ui.tool_end,
+            on_turn_end=lambda _t: ui.end_stream(),
         ),
     )
     return agent

@@ -21,6 +21,7 @@ OnTurnEnd = Callable[[AssistantTurn], None]
 @dataclass
 class AgentHooks:
     on_assistant_text: Optional[OnAssistantText] = None
+    on_text_delta: Optional[Callable[[str], None]] = None
     on_tool_start: Optional[OnToolStart] = None
     on_tool_end: Optional[OnToolEnd] = None
     on_turn_end: Optional[OnTurnEnd] = None
@@ -58,6 +59,7 @@ class Agent:
                 system=self.system_prompt,
                 messages=self.messages,
                 tools=list(self.tools.values()),
+                on_text_delta=self.hooks.on_text_delta,
             )
             last_turn = turn
             self.last_stop_reason = turn.stop_reason
@@ -66,7 +68,8 @@ class Agent:
             self.total_cache_read_tokens += turn.usage.get("cache_read_input_tokens", 0)
             self.total_cache_write_tokens += turn.usage.get("cache_creation_input_tokens", 0)
 
-            if turn.text and self.hooks.on_assistant_text:
+            if turn.text and self.hooks.on_assistant_text and not self.hooks.on_text_delta:
+                # When streaming, deltas have already been delivered; don't repeat the full text.
                 self.hooks.on_assistant_text(turn.text)
 
             self.messages.append(self._format_assistant(turn))

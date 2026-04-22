@@ -19,7 +19,7 @@ class FakeProvider:
         self.script = list(script)
         self.calls: list[dict] = []
 
-    def complete(self, system, messages, tools, max_tokens=4096):
+    def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
         self.calls.append({"messages": list(messages), "n_tools": len(tools)})
         if not self.script:
             return AssistantTurn(text="(done)", stop_reason="end_turn")
@@ -106,7 +106,7 @@ def test_iteration_cap(monkeypatch, tmp_path):
     # Provider that always asks for another tool call.
     class Loop:
         name = "fake"; model = "x"
-        def complete(self, system, messages, tools, max_tokens=4096):
+        def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
             return AssistantTurn(
                 tool_calls=[ToolCall(id="c", name="list_dir", args={"path": str(tmp_path)})],
             )

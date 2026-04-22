@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
-from typing import Any, Iterable, Optional, Protocol
+from typing import Any, Callable, Iterable, Optional, Protocol
 
 from .tools import Tool
 
@@ -42,6 +42,7 @@ class LLMProvider(Protocol):
         messages: list[dict],
         tools: list[Tool],
         max_tokens: int = 4096,
+        on_text_delta: Optional[Callable[[str], None]] = None,
     ) -> AssistantTurn: ...
 
 
@@ -74,7 +75,12 @@ class AnthropicProvider:
             out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
         return out
 
-    def complete(self, system, messages, tools, max_tokens=4096):
+    def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
+        if on_text_delta is None:
+            return self._complete_blocking(system, messages, tools, max_tokens)
+        return self._complete_streaming(system, messages, tools, max_tokens, on_text_delta)
+
+    def _complete_blocking(self, system, messages, tools, max_tokens):
         resp = self.client.messages.create(
             model=self.model,
             system=self._system_blocks(system),
@@ -82,6 +88,23 @@ class AnthropicProvider:
             tools=self._tool_blocks(tools),
             max_tokens=max_tokens,
         )
+        return self._build_turn(resp)
+
+    def _complete_streaming(self, system, messages, tools, max_tokens, on_text_delta):
+        with self.client.messages.stream(
+            model=self.model,
+            system=self._system_blocks(system),
+            messages=messages,
+            tools=self._tool_blocks(tools),
+            max_tokens=max_tokens,
+        ) as stream:
+            for event in stream:
+                if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                    on_text_delta(event.delta.text)
+            resp = stream.get_final_message()
+        return self._build_turn(resp)
+
+    def _build_turn(self, resp) -> "AssistantTurn":
         text = ""
         tool_calls: list[ToolCall] = []
         for block in resp.content:
@@ -137,14 +160,62 @@ class OpenAIProvider:
         self.client = OpenAI(api_key=api_key or os.environ.get("OPENAI_API_KEY"))
         self.model = model
 
-    def complete(self, system, messages, tools, max_tokens=4096):
+    def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
         msgs = [{"role": "system", "content": system}] + messages
-        resp = self.client.chat.completions.create(
-            model=self.model,
-            messages=msgs,
-            tools=[t.to_openai() for t in tools] or None,
-            max_tokens=max_tokens,
-        )
+        if on_text_delta is None:
+            resp = self.client.chat.completions.create(
+                model=self.model,
+                messages=msgs,
+                tools=[t.to_openai() for t in tools] or None,
+                max_tokens=max_tokens,
+            )
+        else:
+            # Streaming path
+            stream = self.client.chat.completions.create(
+                model=self.model,
+                messages=msgs,
+                tools=[t.to_openai() for t in tools] or None,
+                max_tokens=max_tokens,
+                stream=True,
+                stream_options={"include_usage": True},
+            )
+            text_acc = ""
+            tool_acc: dict[int, dict] = {}
+            finish = None
+            usage_out = None
+            for chunk in stream:
+                if chunk.usage:
+                    usage_out = chunk.usage
+                if not chunk.choices:
+                    continue
+                delta = chunk.choices[0].delta
+                if delta.content:
+                    text_acc += delta.content
+                    on_text_delta(delta.content)
+                for tc in (delta.tool_calls or []):
+                    slot = tool_acc.setdefault(tc.index, {"id": "", "name": "", "args": ""})
+                    if tc.id: slot["id"] = tc.id
+                    if tc.function and tc.function.name: slot["name"] = tc.function.name
+                    if tc.function and tc.function.arguments: slot["args"] += tc.function.arguments
+                if chunk.choices[0].finish_reason:
+                    finish = chunk.choices[0].finish_reason
+
+            import json as _json
+            tool_calls = [
+                ToolCall(id=v["id"], name=v["name"], args=_json.loads(v["args"] or "{}"))
+                for v in tool_acc.values()
+            ]
+            return AssistantTurn(
+                text=text_acc,
+                tool_calls=tool_calls,
+                stop_reason=finish,
+                usage={
+                    "input_tokens": getattr(usage_out, "prompt_tokens", 0) if usage_out else 0,
+                    "output_tokens": getattr(usage_out, "completion_tokens", 0) if usage_out else 0,
+                },
+                raw=None,
+            )
+
         choice = resp.choices[0]
         msg = choice.message
         tool_calls = []

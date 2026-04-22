@@ -30,7 +30,7 @@ def test_compaction_calls_provider_and_keeps_tail():
     class Stub:
         name = "fake"; model = "x"
         called = False
-        def complete(self, system, messages, tools, max_tokens=4096):
+        def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
             Stub.called = True
             from vibeharness.llm import AssistantTurn
             return AssistantTurn(text="SUMMARY")

@@ -25,6 +25,19 @@ class TerminalUI:
     def __init__(self, console: Optional[Console] = None) -> None:
         self.console = console or Console()
         self._last_was_text = False
+        self._streaming = False
+
+    # ----------------------------------------------------- streaming text
+    def text_delta(self, delta: str) -> None:
+        if not self._streaming:
+            self.console.print()  # leading newline once per turn
+            self._streaming = True
+        self.console.print(delta, end="", soft_wrap=True, highlight=False, markup=False)
+
+    def end_stream(self) -> None:
+        if self._streaming:
+            self.console.print()
+            self._streaming = False
 
     # ------------------------------------------------------- assistant text
     def assistant_text(self, text: str) -> None:
@@ -36,6 +49,7 @@ class TerminalUI:
 
     # -------------------------------------------------------- tool render
     def tool_start(self, tc: ToolCall) -> None:
+        self.end_stream()
         title = f"[bold cyan]▸ {tc.name}[/bold cyan]"
         preview = self._args_preview(tc.name, tc.args)
         self.console.print(f"{title} [dim]{preview}[/dim]")
