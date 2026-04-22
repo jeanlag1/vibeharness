@@ -1,23 +1,56 @@
 # 🌀 vibeharness
 
-A medium-weight terminal coding agent in the spirit of **Claude Code** and
-**GitHub Copilot CLI** — built in ~2k lines of Python so you can actually
-read it end-to-end.
+**An interactive, tool-using LLM agent harness for the terminal** — the
+hackable middle ground between a 100-line ReAct toy and a closed-source
+product like Claude Code or Copilot CLI. ~2.4k lines of Python you can
+actually read end-to-end.
 
-Give it an Anthropic API key and a task. It reads your files, edits them with
-surgical-replace semantics, runs shell commands in persistent sessions,
-spawns sub-agents for heavy investigations, externalizes a checklist as it
-goes, and keeps going until the job is done (or it asks for help).
+What you get when you launch `vibe`:
+
+- A **stateful REPL** that holds a multi-turn conversation with the model
+  and renders it live: streaming token-by-token output, a thinking spinner,
+  rich diff/grep/bash panels, and a magenta `◆ vibe` / green `❯ you`
+  speaker layout you can scan at a glance.
+- A **tool-using agent loop** that the model drives autonomously inside
+  each turn: read/write/edit files (with strict-match diffs), grep, glob,
+  list, run bash in **persistent PTY sessions** (and background processes),
+  spawn isolated **sub-agents** for self-contained subtasks, and update an
+  externalized **planning checklist** as it works.
+- A **provider abstraction** over Anthropic and OpenAI with token
+  streaming, **prompt caching** (cache_control breakpoints on the system
+  prompt + tool defs → ~90% discount on repeated turns), and a
+  **rate-limit-aware retry layer** that honors `Retry-After`, falls back to
+  exponential backoff with full jitter, and surfaces each retry in the UI.
+- A **policy + extensibility surface**: three-mode permission policy
+  (`auto` / `ask` / `deny`) with per-tool approval memory, plus user-defined
+  `before_tool` / `after_tool` **hooks** in `~/.vibe/hooks.py` that can
+  mutate args, deny calls, or post-process results (auto-format, gate
+  commands, log to disk).
+- A **session layer** that JSON-serializes the conversation **after every
+  tool call** (mid-turn checkpointing — Ctrl-C never loses progress) and
+  **re-renders the full transcript on resume** so you pick up exactly
+  where you left off.
+- **Context management** that token-counts every turn and triggers an
+  auto-summarization compactor when the window crosses 75% so long
+  sessions don't blow out the model's context limit.
+- **Composable input**: `@path/to/file` mentions inline file contents,
+  `/cmdname` runs custom prompts from `~/.vibe/commands/*.md`, and the
+  built-in `/help`, `/sessions`, `/cost`, `/tools`, `/compact`, `/save`,
+  `/clear` give you full session introspection without leaving the REPL.
 
 ```bash
-$ vibe run "add a docstring to every public function in src/utils.py"
+$ vibe
 ```
 
 ```
-╭─ vibeharness · model: claude-sonnet-4-5 · cwd: ~/proj ─╮
-│ Type your task. Ctrl-C to exit.                        │
-╰────────────────────────────────────────────────────────╯
-Looking at src/utils.py and adding docstrings...
+╭─ 🌀 vibeharness v0.2.1 · model: claude-sonnet-4-5 · cwd: ~/proj · session: a1b2c3d4e5 ─╮
+│ Type a task, /help for commands, Ctrl-C to exit.                                       │
+╰────────────────────────────────────────────────────────────────────────────────────────╯
+
+❯ you: refactor src/utils.py — add docstrings to every public function
+
+◆ vibe
+Looking at src/utils.py and adding docstrings…
 ▸ read_file src/utils.py
 ╭─ 📄 src/utils.py ─╮
 │ def slugify(s):   │
@@ -32,6 +65,9 @@ Looking at src/utils.py and adding docstrings...
 Added docstrings to all 4 public functions.
                               tokens: in=2103 out=412 cache_r=1850  cost≈$0.0073
 ```
+
+(There's also a `vibe run "<task>"` one-shot mode for scripting / CI, but
+the REPL is the primary interface.)
 
 ---
 
