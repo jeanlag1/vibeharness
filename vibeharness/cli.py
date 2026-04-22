@@ -189,9 +189,21 @@ def _start_session(
 
 
 def _run_one(agent: Agent, task: str, ui: TerminalUI, context: ContextManager) -> None:
+    from .pricing import estimate_cost
     _maybe_compact(agent, context, ui)
     agent.run(task)
-    ui.usage(agent.total_input_tokens, agent.total_output_tokens)
+    cost = estimate_cost(
+        agent.provider.model,
+        agent.total_input_tokens,
+        agent.total_output_tokens,
+        agent.total_cache_read_tokens,
+        agent.total_cache_write_tokens,
+    )
+    ui.usage(
+        agent.total_input_tokens, agent.total_output_tokens,
+        agent.total_cache_read_tokens, agent.total_cache_write_tokens,
+        cost_usd=cost, model=agent.provider.model,
+    )
 
 
 @app.command("sessions")

@@ -37,6 +37,9 @@ class Agent:
     max_iters: int = 50
     total_input_tokens: int = 0
     total_output_tokens: int = 0
+    total_cache_read_tokens: int = 0
+    total_cache_write_tokens: int = 0
+    last_stop_reason: Optional[str] = None
 
     # ------------------------------------------------------------------ public
     def add_user_message(self, text: str) -> None:
@@ -57,8 +60,11 @@ class Agent:
                 tools=list(self.tools.values()),
             )
             last_turn = turn
+            self.last_stop_reason = turn.stop_reason
             self.total_input_tokens += turn.usage.get("input_tokens", 0)
             self.total_output_tokens += turn.usage.get("output_tokens", 0)
+            self.total_cache_read_tokens += turn.usage.get("cache_read_input_tokens", 0)
+            self.total_cache_write_tokens += turn.usage.get("cache_creation_input_tokens", 0)
 
             if turn.text and self.hooks.on_assistant_text:
                 self.hooks.on_assistant_text(turn.text)
@@ -66,6 +72,16 @@ class Agent:
             self.messages.append(self._format_assistant(turn))
 
             if not turn.tool_calls:
+                # Detect truncation: model wanted to keep going but hit max_tokens.
+                if turn.stop_reason == "max_tokens":
+                    if self.hooks.on_turn_end:
+                        self.hooks.on_turn_end(turn)
+                    # Nudge the model to continue.
+                    self.add_user_message(
+                        "Your previous response was cut off at the output token limit. "
+                        "Please continue from where you left off."
+                    )
+                    continue
                 if self.hooks.on_turn_end:
                     self.hooks.on_turn_end(turn)
                 return turn

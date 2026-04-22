@@ -94,9 +94,15 @@ class TerminalUI:
     def divider(self, label: str = "") -> None:
         self.console.print(Rule(label, style="dim"))
 
-    def usage(self, in_tokens: int, out_tokens: int) -> None:
+    def usage(self, in_tokens: int, out_tokens: int,
+              cache_read: int = 0, cache_write: int = 0,
+              cost_usd: float | None = None, model: str = "") -> None:
+        from .pricing import format_cost
+        cache_str = f" cache_r={cache_read} cache_w={cache_write}" if (cache_read or cache_write) else ""
+        cost_str = f"  cost≈{format_cost(cost_usd)}" if cost_usd is not None else ""
         self.console.print(
-            f"[dim]tokens: in={in_tokens} out={out_tokens}[/dim]", justify="right"
+            f"[dim]tokens: in={in_tokens} out={out_tokens}{cache_str}{cost_str}[/dim]",
+            justify="right",
         )
 
     # --------------------------------------------------------- internals

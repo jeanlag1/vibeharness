@@ -77,6 +77,8 @@ class AnthropicProvider:
         usage = {
             "input_tokens": getattr(resp.usage, "input_tokens", 0),
             "output_tokens": getattr(resp.usage, "output_tokens", 0),
+            "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0) or 0,
+            "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0) or 0,
         }
         return AssistantTurn(
             text=text,

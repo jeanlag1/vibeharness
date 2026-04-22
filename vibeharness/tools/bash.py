@@ -10,6 +10,7 @@ and `cd` works as expected. Supports:
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -26,6 +27,39 @@ MAX_OUTPUT_BYTES = 100_000
 
 # A unique sentinel printed after every command so we know when output ends.
 _SENTINEL = "__VIBE_DONE__"
+
+# Strip ANSI color escape sequences from captured output.
+_ANSI_RE = re.compile(r"\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])")
+
+
+def _strip_ansi(s: str) -> str:
+    return _ANSI_RE.sub("", s)
+
+
+def _smart_truncate(s: str, limit: int = MAX_OUTPUT_BYTES) -> str:
+    """Trim long output by keeping head + tail and collapsing run-length-encodable lines."""
+    s = _strip_ansi(s)
+    # Collapse runs of identical lines (e.g. download progress) to '...(xN)'.
+    out_lines: list[str] = []
+    last: str | None = None
+    rep = 0
+    for line in s.splitlines():
+        if line == last:
+            rep += 1
+            continue
+        if rep:
+            out_lines.append(f"  ...(repeated {rep+1}x)")
+            rep = 0
+        out_lines.append(line)
+        last = line
+    if rep:
+        out_lines.append(f"  ...(repeated {rep+1}x)")
+    s = "\n".join(out_lines)
+    if len(s) <= limit:
+        return s
+    head = s[: limit // 2]
+    tail = s[-limit // 2 :]
+    return head + f"\n...[truncated {len(s) - limit} bytes]...\n" + tail
 
 
 class ToolError(Exception):
@@ -104,12 +138,8 @@ class BashManager:
         except pexpect.EOF:
             raise ToolError("shell session died unexpectedly")
 
-        if len(output) > MAX_OUTPUT_BYTES:
-            output = (
-                output[: MAX_OUTPUT_BYTES // 2]
-                + f"\n...[truncated {len(output) - MAX_OUTPUT_BYTES} bytes]...\n"
-                + output[-MAX_OUTPUT_BYTES // 2 :]
-            )
+        if len(output) > MAX_OUTPUT_BYTES or "\x1b" in output:
+            output = _smart_truncate(output, MAX_OUTPUT_BYTES)
         return {
             "stdout": output,
             "exit_code": exit_code,
@@ -141,7 +171,7 @@ class BashManager:
                 data = f.read()
         except FileNotFoundError:
             data = b""
-        text = data.decode("utf-8", errors="replace")
+        text = _strip_ansi(data.decode("utf-8", errors="replace"))
         if len(text) > tail:
             text = "...[truncated]...\n" + text[-tail:]
         rc = bg.proc.poll()
