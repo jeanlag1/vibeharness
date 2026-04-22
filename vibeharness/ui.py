@@ -132,6 +132,14 @@ class TerminalUI:
     def user_prompt(self) -> str:
         return Prompt.ask("\n[bold green]❯ you[/bold green]")
 
+    def rate_limited(self, attempt: int, delay: float, exc: BaseException) -> None:
+        self.done_thinking()
+        kind = exc.__class__.__name__
+        self.console.print(
+            f"[yellow]⏳ {kind}: retrying in {delay:.1f}s (attempt {attempt})…[/yellow]",
+            highlight=False,
+        )
+
     def help(self, custom_cmds: list[str]) -> None:
         from rich.table import Table
         t = Table(show_header=False, box=None, padding=(0, 2))

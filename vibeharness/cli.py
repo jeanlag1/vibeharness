@@ -129,6 +129,10 @@ def _start_session(
     permission_mode = "auto" if auto else (permission_mode or cfg.permission_mode)
 
     ui = TerminalUI()
+    # Surface provider-level retry events through the UI.
+    from . import llm as _llm
+    _llm.on_retry_event = ui.rate_limited
+
     if provider == "anthropic" and not os.environ.get("ANTHROPIC_API_KEY"):
         ui.console.print("[red]ANTHROPIC_API_KEY is not set.[/red]")
         raise typer.Exit(1)

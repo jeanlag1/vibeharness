@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.2.1
+
+### Added
+- **Resume now replays the conversation.** `vibe --resume ID` re-renders
+  every prior user turn, assistant reply, and tool call so you immediately
+  see where you left off (handles both Anthropic block-format and OpenAI
+  flat-format histories).
+- **Thinking spinner** while waiting on the LLM, auto-dismissed on the
+  first streamed token or tool call.
+- **Banner upgrade** — version, session id, and `(resumed)` tag.
+- **`/help` rendered as a Rich table** of every builtin + custom command.
+- **New REPL commands**: `/sessions`, `/cost`, `/tools`.
+- **Distinct ❯/◆ speaker markers** for user vs. assistant.
+- **Rate-limit awareness.** Every provider call is wrapped in a retry
+  layer (`vibeharness/retry.py`):
+    - Retries on `429`, `529`, `5xx`, connection + timeout errors.
+    - Honors `Retry-After` headers; otherwise exponential backoff with
+      full jitter (1s → 60s, up to 6 attempts; tunable via
+      `VIBE_MAX_RETRIES` / `VIBE_RETRY_BASE_DELAY` / `VIBE_RETRY_MAX_DELAY`).
+    - Friendly `⏳ retrying in 4.2s (attempt 2)…` UI message.
+    - Non-retryable 4xx still raise immediately.
+
+### Fixed
+- Stray `dispatch` import in `agent.py`'s `TYPE_CHECKING` block.
+
 ## 0.2.0
 
 Major v1 → v2 upgrade. Eleven new features across seven commits.

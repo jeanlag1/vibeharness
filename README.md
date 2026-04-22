@@ -85,10 +85,13 @@ Inside the REPL:
 - type a task to send it to the agent (text **streams** in real-time)
 - `@path/to/file` anywhere in your message attaches that file as context
 - `/cmdname` runs a custom slash command from `~/.vibe/commands/cmdname.md`
+- `/help` — pretty table of every builtin + custom command
 - `/save` — write the session to `~/.vibe/sessions/`
+- `/sessions` — list saved sessions, marks the current one
+- `/cost` — show cumulative tokens + USD estimate for this session
+- `/tools` — list every tool available to the agent
 - `/compact` — summarize older turns to free context
 - `/clear` — wipe history
-- `/help` — list builtin + custom commands
 - `/exit` — quit
 
 ### One-shot
@@ -101,11 +104,13 @@ vibe run "write a pytest fixture for our database client" --auto
 ### Resume a session
 
 Sessions are checkpointed **after every tool call**, not just at end of turn,
-so a Ctrl-C or crash never loses progress.
+so a Ctrl-C or crash never loses progress. When you resume, the full
+transcript (user turns, assistant replies, tool calls) is **re-rendered** so
+you immediately see where you left off.
 
 ```bash
-vibe sessions                 # list
-vibe --resume a1b2c3d4e5      # pick up where you left off
+vibe sessions                 # list (also available as /sessions inside REPL)
+vibe --resume a1b2c3d4e5      # full transcript replays, then prompt
 ```
 
 ### Inspect tools
@@ -182,6 +187,7 @@ Hooks run for every tool call (including those inside sub-agents).
 vibeharness/
 ├── agent.py          ← main loop: LLM ↔ tools ↔ permissions ↔ hooks
 ├── llm.py            ← provider abstraction (Anthropic, OpenAI) + streaming + caching
+├── retry.py          ← rate-limit-aware retry: 429/529/5xx + Retry-After + jitter
 ├── prompts.py        ← system prompt (encourages externalized planning)
 ├── permissions.py    ← auto / ask / deny policy
 ├── context.py        ← token counting + auto-compaction
@@ -267,6 +273,32 @@ on any non-trivial task. Empirically this reduces drift on long sessions.
   `cache_control: {type: "ephemeral"}` breakpoints. Repeated turns within the
   5-minute cache window read those tokens at ~90% discount; the cost meter
   shows `cache_r=` / `cache_w=` separately.
+- **Thinking spinner**: while waiting on the LLM you see a `thinking…` dots
+  spinner that auto-dismisses on the first streamed token or tool call.
+
+### Rate-limit awareness
+
+LLM APIs throw `429 RateLimitError`, `529 Overloaded`, intermittent 5xx, and
+network blips all the time. vibeharness wraps every provider call in a
+retry layer (`vibeharness/retry.py`):
+
+- Retries on `429`, `529`, `5xx`, and connection / timeout errors.
+- **Honors `Retry-After`** headers when the API tells you exactly how long to
+  wait; falls back to **exponential backoff with full jitter** otherwise
+  (1s → 2s → 4s → … capped at 60s, up to 6 attempts).
+- Surfaces every retry through the UI as a friendly
+  `⏳ RateLimitError: retrying in 4.2s (attempt 2)…` line so you know the
+  agent isn't dead — it's just being polite to the API.
+- Non-retryable errors (4xx other than 408/409/425/429) are raised
+  immediately so bad requests don't waste backoff.
+
+Tunables (env vars, sensible defaults):
+
+| var | default | meaning |
+|---|---|---|
+| `VIBE_MAX_RETRIES` | `6` | max attempts per provider call |
+| `VIBE_RETRY_BASE_DELAY` | `1.0` | base seconds for exponential backoff |
+| `VIBE_RETRY_MAX_DELAY` | `60.0` | per-attempt cap |
 
 ### Permissions
 
@@ -304,13 +336,13 @@ pip install -e ".[dev]"
 pytest -q
 ```
 
-There are 69 tests, none of which need an API key. They use a `FakeProvider`
+There are 80 tests, none of which need an API key. They use a `FakeProvider`
 to exercise the agent loop deterministically.
 
 ```
 $ pytest -q
-.....................................................................    [100%]
-69 passed
+................................................................................ [100%]
+80 passed
 ```
 
 ---

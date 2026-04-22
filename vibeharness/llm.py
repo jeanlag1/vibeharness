@@ -10,10 +10,23 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Optional, Protocol
 
+from .retry import call_with_retry
 from .tools import Tool
 
 DEFAULT_ANTHROPIC_MODEL = "claude-sonnet-4-5"
 DEFAULT_OPENAI_MODEL = "gpt-4.1"
+
+# Module-level callable so the CLI/UI can subscribe to retry events without
+# threading another argument through every provider call.
+on_retry_event: Optional[Callable[[int, float, BaseException], None]] = None
+
+
+def _emit_retry(attempt: int, delay: float, exc: BaseException) -> None:
+    if on_retry_event is not None:
+        try:
+            on_retry_event(attempt, delay, exc)
+        except Exception:
+            pass
 
 
 @dataclass
@@ -81,27 +94,31 @@ class AnthropicProvider:
         return self._complete_streaming(system, messages, tools, max_tokens, on_text_delta)
 
     def _complete_blocking(self, system, messages, tools, max_tokens):
-        resp = self.client.messages.create(
+        resp = call_with_retry(
+            self.client.messages.create,
             model=self.model,
             system=self._system_blocks(system),
             messages=messages,
             tools=self._tool_blocks(tools),
             max_tokens=max_tokens,
+            on_retry=_emit_retry,
         )
         return self._build_turn(resp)
 
     def _complete_streaming(self, system, messages, tools, max_tokens, on_text_delta):
-        with self.client.messages.stream(
-            model=self.model,
-            system=self._system_blocks(system),
-            messages=messages,
-            tools=self._tool_blocks(tools),
-            max_tokens=max_tokens,
-        ) as stream:
-            for event in stream:
-                if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
-                    on_text_delta(event.delta.text)
-            resp = stream.get_final_message()
+        def _do_stream():
+            with self.client.messages.stream(
+                model=self.model,
+                system=self._system_blocks(system),
+                messages=messages,
+                tools=self._tool_blocks(tools),
+                max_tokens=max_tokens,
+            ) as stream:
+                for event in stream:
+                    if event.type == "content_block_delta" and getattr(event.delta, "type", "") == "text_delta":
+                        on_text_delta(event.delta.text)
+                return stream.get_final_message()
+        resp = call_with_retry(_do_stream, on_retry=_emit_retry)
         return self._build_turn(resp)
 
     def _build_turn(self, resp) -> "AssistantTurn":
@@ -163,22 +180,26 @@ class OpenAIProvider:
     def complete(self, system, messages, tools, max_tokens=4096, on_text_delta=None):
         msgs = [{"role": "system", "content": system}] + messages
         if on_text_delta is None:
-            resp = self.client.chat.completions.create(
+            resp = call_with_retry(
+                self.client.chat.completions.create,
                 model=self.model,
                 messages=msgs,
                 tools=[t.to_openai() for t in tools] or None,
                 max_tokens=max_tokens,
+                on_retry=_emit_retry,
             )
         else:
             # Streaming path
-            stream = self.client.chat.completions.create(
-                model=self.model,
-                messages=msgs,
-                tools=[t.to_openai() for t in tools] or None,
-                max_tokens=max_tokens,
-                stream=True,
-                stream_options={"include_usage": True},
-            )
+            def _open_stream():
+                return self.client.chat.completions.create(
+                    model=self.model,
+                    messages=msgs,
+                    tools=[t.to_openai() for t in tools] or None,
+                    max_tokens=max_tokens,
+                    stream=True,
+                    stream_options={"include_usage": True},
+                )
+            stream = call_with_retry(_open_stream, on_retry=_emit_retry)
             text_acc = ""
             tool_acc: dict[int, dict] = {}
             finish = None
