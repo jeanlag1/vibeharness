@@ -57,6 +57,11 @@ def _build_agent(
     for t in make_plan_tools(plan):
         agent.tools[t.name] = t
     agent.plan = plan  # type: ignore[attr-defined]
+
+    # Wire up the task (sub-agent) tool.
+    from .subagent import make_task_tool
+    agent.tools["task"] = make_task_tool(provider, parent_tools=dict(agent.tools))
+
     return agent
 
 
