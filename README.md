@@ -411,6 +411,4 @@ MIT. See [LICENSE](./LICENSE).
 ## Credits
 
 Built as a worked example of what's actually inside an agent harness like
-Claude Code or Copilot CLI. Heavy inspiration from both, plus
-[`aider`](https://github.com/Aider-AI/aider) and
-[`smol-developer`](https://github.com/smol-ai/developer).
+Claude Code or Copilot CLI.
