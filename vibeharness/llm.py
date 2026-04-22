@@ -51,20 +51,35 @@ class LLMProvider(Protocol):
 class AnthropicProvider:
     name = "anthropic"
 
-    def __init__(self, model: str = DEFAULT_ANTHROPIC_MODEL, api_key: Optional[str] = None):
+    def __init__(self, model: str = DEFAULT_ANTHROPIC_MODEL, api_key: Optional[str] = None,
+                 enable_prompt_caching: bool = True):
         try:
             from anthropic import Anthropic
         except ImportError as e:  # pragma: no cover
             raise RuntimeError("anthropic package required") from e
         self.client = Anthropic(api_key=api_key or os.environ.get("ANTHROPIC_API_KEY"))
         self.model = model
+        self.enable_prompt_caching = enable_prompt_caching
+
+    def _system_blocks(self, system: str) -> list[dict]:
+        block: dict = {"type": "text", "text": system}
+        if self.enable_prompt_caching:
+            block["cache_control"] = {"type": "ephemeral"}
+        return [block]
+
+    def _tool_blocks(self, tools) -> list[dict]:
+        out = [t.to_anthropic() for t in tools]
+        if self.enable_prompt_caching and out:
+            # Cache breakpoint on the LAST tool entry covers all tool defs.
+            out[-1] = {**out[-1], "cache_control": {"type": "ephemeral"}}
+        return out
 
     def complete(self, system, messages, tools, max_tokens=4096):
         resp = self.client.messages.create(
             model=self.model,
-            system=system,
+            system=self._system_blocks(system),
             messages=messages,
-            tools=[t.to_anthropic() for t in tools],
+            tools=self._tool_blocks(tools),
             max_tokens=max_tokens,
         )
         text = ""
