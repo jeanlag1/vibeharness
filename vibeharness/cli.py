@@ -16,6 +16,7 @@ from .context import ContextManager
 from .llm import make_provider
 from .permissions import PermissionPolicy
 from .prompts import build_system_prompt
+from .repl_input import list_slash_commands, preprocess
 from .session import SessionMeta, list_sessions, load_session, save_session
 from .ui import TerminalUI
 
@@ -173,10 +174,15 @@ def _start_session(
                 agent.messages = context.compact(agent.provider, agent.messages)
                 continue
             if user_input == "/help":
-                ui.console.print("[dim]commands: /save /clear /compact /exit[/dim]")
+                cmds = list_slash_commands()
+                cmd_str = "  ".join(f"/{c}" for c in cmds) if cmds else "(none defined)"
+                ui.console.print("[dim]builtin: /save /clear /compact /help /exit[/dim]")
+                ui.console.print(f"[dim]custom: {cmd_str}[/dim]")
+                ui.console.print("[dim]use @path/to/file in any message to attach file content[/dim]")
                 continue
             try:
-                _run_one(agent, user_input, ui, context)
+                expanded = preprocess(user_input)
+                _run_one(agent, expanded, ui, context)
                 _save()
             except KeyboardInterrupt:
                 ui.console.print("\n[yellow]interrupted[/yellow]")
