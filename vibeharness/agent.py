@@ -11,7 +11,7 @@ from .prompts import build_system_prompt
 from .tools import Tool, build_default_registry, dispatch
 
 if TYPE_CHECKING:  # pragma: no cover
-    from .hooks import HookManager, dispatch
+    from .hooks import HookManager
 
 
 # Hook signatures for UI integration. All optional.
@@ -28,6 +28,8 @@ class AgentHooks:
     on_tool_start: Optional[OnToolStart] = None
     on_tool_end: Optional[OnToolEnd] = None
     on_turn_end: Optional[OnTurnEnd] = None
+    on_request_start: Optional[Callable[[], None]] = None
+    on_request_end: Optional[Callable[[], None]] = None
 
 
 @dataclass
@@ -60,12 +62,34 @@ class Agent:
         last_turn: Optional[AssistantTurn] = None
 
         for _ in range(self.max_iters):
-            turn = self.provider.complete(
-                system=self.system_prompt,
-                messages=self.messages,
-                tools=list(self.tools.values()),
-                on_text_delta=self.hooks.on_text_delta,
-            )
+            if self.hooks.on_request_start:
+                try: self.hooks.on_request_start()
+                except Exception: pass
+
+            # Wrap text-delta to auto-stop the thinking spinner on first token.
+            _wrapped_delta = self.hooks.on_text_delta
+            if _wrapped_delta and self.hooks.on_request_end:
+                _stopped = {"v": False}
+                _user_cb = self.hooks.on_text_delta
+                _end_cb = self.hooks.on_request_end
+                def _wrapped_delta(d, _u=_user_cb, _e=_end_cb, _s=_stopped):
+                    if not _s["v"]:
+                        _s["v"] = True
+                        try: _e()
+                        except Exception: pass
+                    _u(d)
+
+            try:
+                turn = self.provider.complete(
+                    system=self.system_prompt,
+                    messages=self.messages,
+                    tools=list(self.tools.values()),
+                    on_text_delta=_wrapped_delta,
+                )
+            finally:
+                if self.hooks.on_request_end:
+                    try: self.hooks.on_request_end()
+                    except Exception: pass
             last_turn = turn
             self.last_stop_reason = turn.stop_reason
             self.total_input_tokens += turn.usage.get("input_tokens", 0)
@@ -122,6 +146,9 @@ class Agent:
         for tc in calls:
             tool = self.tools.get(tc.name)
             mutating = bool(tool and tool.mutating)
+            if self.hooks.on_request_end:
+                try: self.hooks.on_request_end()
+                except Exception: pass
             allowed, reason = self.permissions.check(tc.name, mutating, tc.args)
             if self.hooks.on_tool_start:
                 self.hooks.on_tool_start(tc)

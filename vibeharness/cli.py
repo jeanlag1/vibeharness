@@ -50,6 +50,8 @@ def _build_agent(
             on_tool_start=ui.tool_start,
             on_tool_end=ui.tool_end,
             on_turn_end=lambda _t: ui.end_stream(),
+            on_request_start=ui.thinking,
+            on_request_end=ui.done_thinking,
         ),
     )
     # Wire up planning tools (one AgentPlan per session).
@@ -138,6 +140,7 @@ def _start_session(
     context = ContextManager(max_tokens=cfg.max_context_tokens)
 
     session_id = resume or uuid.uuid4().hex[:10]
+    resumed = False
     if resume:
         data = load_session(resume)
         if not data:
@@ -146,7 +149,7 @@ def _start_session(
         agent.messages = data["messages"]
         agent.total_input_tokens = data.get("tokens", {}).get("input", 0)
         agent.total_output_tokens = data.get("tokens", {}).get("output", 0)
-        ui.console.print(f"[dim]resumed session {resume} ({len(agent.messages)} messages)[/dim]")
+        resumed = True
 
     meta = SessionMeta(
         id=session_id,
@@ -155,7 +158,9 @@ def _start_session(
         model=agent.provider.model,
         cwd=os.getcwd(),
     )
-    ui.banner(agent.provider.model, os.getcwd())
+    ui.banner(agent.provider.model, os.getcwd(), session_id=session_id, resumed=resumed)
+    if resumed:
+        ui.replay(agent.messages)
 
     def _save():
         return save_session(session_id, meta, agent.messages, agent.total_input_tokens, agent.total_output_tokens)
@@ -192,11 +197,32 @@ def _start_session(
                 agent.messages = context.compact(agent.provider, agent.messages)
                 continue
             if user_input == "/help":
-                cmds = list_slash_commands()
-                cmd_str = "  ".join(f"/{c}" for c in cmds) if cmds else "(none defined)"
-                ui.console.print("[dim]builtin: /save /clear /compact /help /exit[/dim]")
-                ui.console.print(f"[dim]custom: {cmd_str}[/dim]")
-                ui.console.print("[dim]use @path/to/file in any message to attach file content[/dim]")
+                ui.help(list_slash_commands())
+                continue
+            if user_input == "/sessions":
+                rows = list_sessions()
+                if not rows:
+                    ui.console.print("[dim](no sessions)[/dim]")
+                else:
+                    for r in rows:
+                        marker = " [yellow]← current[/yellow]" if r["id"] == session_id else ""
+                        ui.console.print(f"  [cyan]{r['id']:12}[/cyan]  msgs={r['messages']:<3}  model={r.get('model','?')}{marker}")
+                continue
+            if user_input == "/cost":
+                from .pricing import estimate_cost
+                cost = estimate_cost(
+                    agent.provider.model, agent.total_input_tokens,
+                    agent.total_output_tokens, agent.total_cache_read_tokens,
+                    agent.total_cache_write_tokens,
+                )
+                ui.usage(agent.total_input_tokens, agent.total_output_tokens,
+                         agent.total_cache_read_tokens, agent.total_cache_write_tokens,
+                         cost_usd=cost, model=agent.provider.model)
+                continue
+            if user_input == "/tools":
+                for name, t in agent.tools.items():
+                    marker = "✎" if t.mutating else " "
+                    ui.console.print(f"  [cyan]{marker} {name:18}[/cyan]  [dim]{t.description.splitlines()[0]}[/dim]")
                 continue
             try:
                 expanded = preprocess(user_input)

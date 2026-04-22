@@ -26,11 +26,32 @@ class TerminalUI:
         self.console = console or Console()
         self._last_was_text = False
         self._streaming = False
+        self._status = None  # type: ignore[assignment]
+
+    # ----------------------------------------------------- thinking spinner
+    def thinking(self, label: str = "thinking") -> None:
+        if self._status is not None:
+            return
+        try:
+            self._status = self.console.status(f"[dim italic]{label}…[/dim italic]", spinner="dots")
+            self._status.__enter__()
+        except Exception:
+            self._status = None
+
+    def done_thinking(self) -> None:
+        if self._status is not None:
+            try:
+                self._status.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._status = None
 
     # ----------------------------------------------------- streaming text
     def text_delta(self, delta: str) -> None:
+        self.done_thinking()
         if not self._streaming:
             self.console.print()  # leading newline once per turn
+            self.console.print("[bold magenta]◆ vibe[/bold magenta]")
             self._streaming = True
         self.console.print(delta, end="", soft_wrap=True, highlight=False, markup=False)
 
@@ -49,6 +70,7 @@ class TerminalUI:
 
     # -------------------------------------------------------- tool render
     def tool_start(self, tc: ToolCall) -> None:
+        self.done_thinking()
         self.end_stream()
         title = f"[bold cyan]▸ {tc.name}[/bold cyan]"
         preview = self._args_preview(tc.name, tc.args)
@@ -90,20 +112,49 @@ class TerminalUI:
         return {"y": "allow", "a": "allow_always", "n": "deny"}[choice]
 
     # -------------------------------------------------------- session
-    def banner(self, model: str, cwd: str) -> None:
+    def banner(self, model: str, cwd: str, session_id: str = "", resumed: bool = False) -> None:
+        from . import __version__
+        sid = f"  · session: [yellow]{session_id}[/yellow]" if session_id else ""
+        tag = "  [green](resumed)[/green]" if resumed else ""
         self.console.print(
             Panel(
                 Text.from_markup(
-                    f"[bold]vibeharness[/bold] · model: [cyan]{model}[/cyan] · cwd: [dim]{cwd}[/dim]\n"
-                    "Type your task. [dim]Ctrl-C to exit.[/dim]"
+                    f"[bold magenta]🌀 vibeharness[/bold magenta] [dim]v{__version__}[/dim]  ·  "
+                    f"model: [cyan]{model}[/cyan]  ·  cwd: [dim]{_short(cwd)}[/dim]{sid}{tag}\n"
+                    "[dim]Type a task, [/dim][bold]/help[/bold][dim] for commands, [/dim][bold]Ctrl-C[/bold][dim] to exit.[/dim]"
                 ),
                 border_style="magenta",
                 expand=False,
+                padding=(0, 1),
             )
         )
 
     def user_prompt(self) -> str:
-        return Prompt.ask("\n[bold green]you[/bold green]")
+        return Prompt.ask("\n[bold green]❯ you[/bold green]")
+
+    def help(self, custom_cmds: list[str]) -> None:
+        from rich.table import Table
+        t = Table(show_header=False, box=None, padding=(0, 2))
+        t.add_column(style="bold cyan")
+        t.add_column(style="dim")
+        builtins = [
+            ("/help",       "show this help"),
+            ("/save",       "persist session to ~/.vibe/sessions/"),
+            ("/clear",      "wipe conversation history"),
+            ("/compact",    "summarize older turns to free context"),
+            ("/sessions",   "list saved sessions"),
+            ("/cost",       "show cumulative token + cost usage"),
+            ("/tools",      "list available tools"),
+            ("/exit",       "quit"),
+            ("@path/to/file", "attach a file's contents as context"),
+        ]
+        for k, v in builtins:
+            t.add_row(k, v)
+        if custom_cmds:
+            t.add_row("", "")
+            for c in custom_cmds:
+                t.add_row(f"/{c}", "(custom)")
+        self.console.print(Panel(t, title="commands", title_align="left", border_style="cyan", expand=False))
 
     def divider(self, label: str = "") -> None:
         self.console.print(Rule(label, style="dim"))
@@ -119,7 +170,40 @@ class TerminalUI:
             justify="right",
         )
 
-    # --------------------------------------------------------- internals
+    # -------------------------------------------------------- transcript replay
+    def replay(self, messages: list[dict]) -> None:
+        """Re-render a saved conversation when resuming a session."""
+        if not messages:
+            return
+        self.divider("conversation so far")
+        for msg in messages:
+            role = msg.get("role")
+            content = msg.get("content")
+            if role == "user":
+                text = _extract_user_text(content)
+                if text:
+                    # Hide the auto-injected "your previous response was cut off" nudge
+                    if text.startswith("Your previous response was cut off"):
+                        continue
+                    self.console.print(f"\n[bold green]❯ you[/bold green]")
+                    self.console.print(_truncated(text, 1500))
+            elif role == "assistant":
+                text, tool_calls = _extract_assistant(content, msg)
+                if text and text.strip():
+                    self.console.print(f"\n[bold magenta]◆ vibe[/bold magenta]")
+                    try:
+                        self.console.print(Markdown(text))
+                    except Exception:
+                        self.console.print(text)
+                for name, args in tool_calls:
+                    self.console.print(
+                        f"[bold cyan]▸ {name}[/bold cyan] [dim]{self._args_preview(name, args)}[/dim]"
+                    )
+            elif role == "tool":
+                # OpenAI tool-result message
+                text = msg.get("content") or ""
+                self.console.print(Panel(_truncated(str(text), 600), border_style="dim", expand=False))
+        self.divider("end of replay")
     def _args_preview(self, name: str, args: dict) -> str:
         if name in {"read_file", "write_file", "list_dir", "glob_files"}:
             return args.get("path") or args.get("pattern") or ""
@@ -252,6 +336,52 @@ class TerminalUI:
 
 
 # ---------------------------------------------------------------- helpers
+def _extract_user_text(content) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts = []
+        for blk in content:
+            if isinstance(blk, dict):
+                if blk.get("type") == "text":
+                    parts.append(blk.get("text", ""))
+                elif blk.get("type") == "tool_result":
+                    # Anthropic tool-result lives inside a user message; render briefly.
+                    inner = blk.get("content")
+                    if isinstance(inner, list):
+                        for b in inner:
+                            if isinstance(b, dict) and b.get("type") == "text":
+                                parts.append(f"[tool result] {b.get('text','')[:200]}")
+                    elif isinstance(inner, str):
+                        parts.append(f"[tool result] {inner[:200]}")
+        return "\n".join(p for p in parts if p)
+    return ""
+
+
+def _extract_assistant(content, msg: dict) -> tuple[str, list[tuple[str, dict]]]:
+    text_parts: list[str] = []
+    tool_calls: list[tuple[str, dict]] = []
+    if isinstance(content, list):
+        for blk in content:
+            if not isinstance(blk, dict):
+                continue
+            if blk.get("type") == "text":
+                text_parts.append(blk.get("text", ""))
+            elif blk.get("type") == "tool_use":
+                tool_calls.append((blk.get("name", "?"), blk.get("input", {}) or {}))
+    elif isinstance(content, str):
+        text_parts.append(content)
+    # OpenAI: tool_calls live alongside content
+    for tc in msg.get("tool_calls") or []:
+        fn = tc.get("function", {})
+        try:
+            args = json.loads(fn.get("arguments") or "{}")
+        except Exception:
+            args = {}
+        tool_calls.append((fn.get("name", "?"), args))
+    return ("\n".join(text_parts).strip(), tool_calls)
+
+
 def _short(p: str) -> str:
     home = os.path.expanduser("~")
     if p.startswith(home):
