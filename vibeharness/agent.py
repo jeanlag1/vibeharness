@@ -1,0 +1,118 @@
+"""The agent loop: tie LLM, tools, and permissions together."""
+from __future__ import annotations
+
+import json
+from dataclasses import dataclass, field
+from typing import Any, Callable, Optional
+
+from .llm import AnthropicProvider, AssistantTurn, LLMProvider, OpenAIProvider, ToolCall
+from .permissions import PermissionPolicy
+from .prompts import build_system_prompt
+from .tools import Tool, build_default_registry, dispatch
+
+
+# Hook signatures for UI integration. All optional.
+OnAssistantText = Callable[[str], None]
+OnToolStart = Callable[[ToolCall], None]
+OnToolEnd = Callable[[ToolCall, dict], None]
+OnTurnEnd = Callable[[AssistantTurn], None]
+
+
+@dataclass
+class AgentHooks:
+    on_assistant_text: Optional[OnAssistantText] = None
+    on_tool_start: Optional[OnToolStart] = None
+    on_tool_end: Optional[OnToolEnd] = None
+    on_turn_end: Optional[OnTurnEnd] = None
+
+
+@dataclass
+class Agent:
+    provider: LLMProvider
+    tools: dict[str, Tool] = field(default_factory=build_default_registry)
+    system_prompt: str = field(default_factory=build_system_prompt)
+    permissions: PermissionPolicy = field(default_factory=PermissionPolicy)
+    hooks: AgentHooks = field(default_factory=AgentHooks)
+    messages: list[dict] = field(default_factory=list)
+    max_iters: int = 50
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
+
+    # ------------------------------------------------------------------ public
+    def add_user_message(self, text: str) -> None:
+        if isinstance(self.provider, OpenAIProvider):
+            self.messages.append({"role": "user", "content": text})
+        else:
+            self.messages.append({"role": "user", "content": [{"type": "text", "text": text}]})
+
+    def run(self, user_input: str) -> AssistantTurn:
+        """Run one user-input -> assistant-final-response cycle."""
+        self.add_user_message(user_input)
+        last_turn: Optional[AssistantTurn] = None
+
+        for _ in range(self.max_iters):
+            turn = self.provider.complete(
+                system=self.system_prompt,
+                messages=self.messages,
+                tools=list(self.tools.values()),
+            )
+            last_turn = turn
+            self.total_input_tokens += turn.usage.get("input_tokens", 0)
+            self.total_output_tokens += turn.usage.get("output_tokens", 0)
+
+            if turn.text and self.hooks.on_assistant_text:
+                self.hooks.on_assistant_text(turn.text)
+
+            self.messages.append(self._format_assistant(turn))
+
+            if not turn.tool_calls:
+                if self.hooks.on_turn_end:
+                    self.hooks.on_turn_end(turn)
+                return turn
+
+            results = self._execute_tools(turn.tool_calls)
+            self._append_tool_results(results)
+
+            if self.hooks.on_turn_end:
+                self.hooks.on_turn_end(turn)
+
+        # Hit iteration cap.
+        return last_turn or AssistantTurn(text="(no response)")
+
+    # ------------------------------------------------------------- internals
+    def _format_assistant(self, turn: AssistantTurn) -> dict:
+        if isinstance(self.provider, OpenAIProvider):
+            return OpenAIProvider.format_assistant_message(turn)
+        return AnthropicProvider.format_assistant_message(turn)
+
+    def _execute_tools(self, calls: list[ToolCall]) -> list[tuple[str, str]]:
+        results: list[tuple[str, str]] = []
+        for tc in calls:
+            tool = self.tools.get(tc.name)
+            mutating = bool(tool and tool.mutating)
+            allowed, reason = self.permissions.check(tc.name, mutating, tc.args)
+            if self.hooks.on_tool_start:
+                self.hooks.on_tool_start(tc)
+            if not allowed:
+                payload = {"error": reason}
+            else:
+                payload = dispatch(self.tools, tc.name, tc.args)
+            if self.hooks.on_tool_end:
+                self.hooks.on_tool_end(tc, payload)
+            results.append((tc.id, _serialize(payload)))
+        return results
+
+    def _append_tool_results(self, results: list[tuple[str, str]]) -> None:
+        if isinstance(self.provider, OpenAIProvider):
+            self.messages.extend(OpenAIProvider.format_tool_results(results))
+        else:
+            self.messages.append(AnthropicProvider.format_tool_results(results))
+
+
+def _serialize(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    try:
+        return json.dumps(payload, default=str, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return str(payload)
