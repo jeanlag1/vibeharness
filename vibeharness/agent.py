@@ -3,12 +3,15 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from .llm import AnthropicProvider, AssistantTurn, LLMProvider, OpenAIProvider, ToolCall
 from .permissions import PermissionPolicy
 from .prompts import build_system_prompt
 from .tools import Tool, build_default_registry, dispatch
+
+if TYPE_CHECKING:  # pragma: no cover
+    from .hooks import HookManager, dispatch
 
 
 # Hook signatures for UI integration. All optional.
@@ -41,6 +44,8 @@ class Agent:
     total_cache_read_tokens: int = 0
     total_cache_write_tokens: int = 0
     last_stop_reason: Optional[str] = None
+    hook_manager: Optional["HookManager"] = None
+    on_checkpoint: Optional[Callable[[], None]] = None
 
     # ------------------------------------------------------------------ public
     def add_user_message(self, text: str) -> None:
@@ -92,6 +97,14 @@ class Agent:
             results = self._execute_tools(turn.tool_calls)
             self._append_tool_results(results)
 
+            # Mid-turn checkpoint: persist after every tool round so a crash
+            # or Ctrl-C can be resumed from the latest tool result.
+            if self.on_checkpoint:
+                try:
+                    self.on_checkpoint()
+                except Exception:
+                    pass
+
             if self.hooks.on_turn_end:
                 self.hooks.on_turn_end(turn)
 
@@ -115,7 +128,16 @@ class Agent:
             if not allowed:
                 payload = {"error": reason}
             else:
-                payload = dispatch(self.tools, tc.name, tc.args)
+                args = tc.args
+                override: Optional[dict] = None
+                if self.hook_manager:
+                    args, override = self.hook_manager.run_before(tc.name, args)
+                if override is not None:
+                    payload = override
+                else:
+                    payload = dispatch(self.tools, tc.name, args)
+                    if self.hook_manager:
+                        payload = self.hook_manager.run_after(tc.name, args, payload)
             if self.hooks.on_tool_end:
                 self.hooks.on_tool_end(tc, payload)
             results.append((tc.id, _serialize(payload)))

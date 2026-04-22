@@ -13,6 +13,7 @@ import typer
 from . import __version__, config as cfg_mod
 from .agent import Agent, AgentHooks
 from .context import ContextManager
+from .hooks import load_user_hooks
 from .llm import make_provider
 from .permissions import PermissionPolicy
 from .prompts import build_system_prompt
@@ -61,6 +62,9 @@ def _build_agent(
     # Wire up the task (sub-agent) tool.
     from .subagent import make_task_tool
     agent.tools["task"] = make_task_tool(provider, parent_tools=dict(agent.tools))
+
+    # Load user hooks from ~/.vibe/hooks.py
+    agent.hook_manager = load_user_hooks()
 
     return agent
 
@@ -154,7 +158,10 @@ def _start_session(
     ui.banner(agent.provider.model, os.getcwd())
 
     def _save():
-        save_session(session_id, meta, agent.messages, agent.total_input_tokens, agent.total_output_tokens)
+        return save_session(session_id, meta, agent.messages, agent.total_input_tokens, agent.total_output_tokens)
+
+    # Mid-turn checkpoint: write the session after every tool round.
+    agent.on_checkpoint = _save
 
     try:
         if task:
