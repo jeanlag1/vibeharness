@@ -51,6 +51,12 @@ def _build_agent(
             on_turn_end=lambda _t: ui.end_stream(),
         ),
     )
+    # Wire up planning tools (one AgentPlan per session).
+    from .planning import AgentPlan, make_plan_tools
+    plan = AgentPlan()
+    for t in make_plan_tools(plan):
+        agent.tools[t.name] = t
+    agent.plan = plan  # type: ignore[attr-defined]
     return agent
 
 

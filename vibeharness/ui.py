@@ -136,6 +136,23 @@ class TerminalUI:
 
     def _render_result(self, tc: ToolCall, result: dict) -> Optional[Panel]:
         name = tc.name
+        if name in {"set_plan", "update_plan_item", "get_plan"}:
+            items = result.get("items", [])
+            if not items:
+                return Panel(Text("(empty plan)", style="dim"), border_style="dim", expand=False)
+            icons = {"pending": "○", "in_progress": "◐", "done": "●", "blocked": "✕"}
+            colors = {"pending": "white", "in_progress": "yellow", "done": "green", "blocked": "red"}
+            lines = []
+            for it in items:
+                s = it["status"]
+                lines.append(f"[{colors.get(s,'white')}]{icons.get(s,'?')} {it['text']}[/{colors.get(s,'white')}]")
+            return Panel(
+                Text.from_markup("\n".join(lines)),
+                title=f"📋 plan · {result.get('summary','')}",
+                title_align="left",
+                border_style="magenta",
+                expand=False,
+            )
         if name == "read_file":
             content = result.get("content", "")
             n = content.count("\n")
